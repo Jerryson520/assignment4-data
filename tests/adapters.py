@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import os
 from typing import Any
-
+from fastwarc.warc import ArchiveIterator, WarcRecordType
+from resiliparse.extract.html2text import extract_plain_text
+from resiliparse.parse.encoding import detect_encoding
 
 
 def run_extract_text_from_html_bytes(html_bytes: bytes) -> str | None:
-    raise NotImplementedError
+    try:
+        html_str = html_bytes.decode("utf-8")
+    except:
+        encoding = detect_encoding(html_bytes)
+        html_str = html_bytes.decode(encoding)
+    text = extract_plain_text(html_str)
+    return text
 
 
 def run_identify_language(text: str) -> tuple[Any, float]:
