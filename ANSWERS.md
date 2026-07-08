@@ -52,6 +52,16 @@
 
 ## Problem (extract_text)
 
+### (a)
+
+见 tests/adapters.py 的 `run_extract_text_from_html_bytes` 函数（通过 `uv run pytest -k test_extract_text_from_html_bytes`）。
+
 ### (b)
 
 在同一个 WARC 分片的前 20 条记录上运行我的提取函数，并与对应 WET 记录逐条对比（见 results/my_extract.txt 与 results/wet_extract.txt）：两者提取出的正文内容基本一致——导航菜单、正文段落、规格参数表都同时出现在两边。区别主要在于：WET 会包含 `<title>` 的内容（如第 3 条开头的 "Welcome to USNCCM13!"），且每个文本块紧凑地占一行；而 resiliparse 不含 title、保留了列表的层级结构（"•" 项目符号和缩进）但夹杂大量空行，还会把隐藏垃圾块里的原始 HTML 标签（如 `<th id="gckmo">`）当作文本泄漏出来。总体上 WET 的输出更干净紧凑，而 resiliparse 保留的结构信息更多且可通过 main_content=True 等选项进一步做主内容提取；两者都没有过滤导航、电话等样板内容，都需要后续的质量过滤。
+
+## Problem (language_identification)
+
+### (a)
+
+见 tests/adapters.py 的 `run_identify_language` 函数（通过 `uv run pytest -k test_identify_language`）。

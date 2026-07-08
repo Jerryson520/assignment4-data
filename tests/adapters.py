@@ -5,7 +5,7 @@ from typing import Any
 from fastwarc.warc import ArchiveIterator, WarcRecordType
 from resiliparse.extract.html2text import extract_plain_text
 from resiliparse.parse.encoding import detect_encoding
-
+import fasttext
 
 def run_extract_text_from_html_bytes(html_bytes: bytes) -> str | None:
     try:
@@ -18,8 +18,10 @@ def run_extract_text_from_html_bytes(html_bytes: bytes) -> str | None:
 
 
 def run_identify_language(text: str) -> tuple[Any, float]:
-    raise NotImplementedError
-
+    model = fasttext.load_model("models/lid.176.bin")
+    label, scores = model.predict(text.replace("\n", " ").strip())
+    label = label[0][9:]
+    return label, max(scores)
 
 def run_mask_emails(text: str) -> tuple[str, int]:
     raise NotImplementedError
@@ -64,3 +66,6 @@ def run_minhash_deduplication(
     output_directory: os.PathLike,
 ):
     raise NotImplementedError
+
+if __name__ == "__main__":
+    print(run_identify_language("欢迎来到我们的网站"))
