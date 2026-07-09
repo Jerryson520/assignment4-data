@@ -9,33 +9,14 @@ import fasttext
 import random
 from typing import Any
 import re
+from tests.adapters import (
+    run_extract_text_from_html_bytes,
+    run_mask_emails,
+    run_mask_phone_numbers,
+    run_mask_ips
+)
 
 FAST_MODEL = fasttext.load_model("models/lid.176.bin")
-
-def run_mask_emails(text: str) -> tuple[str, int]:
-    pattern = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
-    new_string, count = re.subn(pattern, "|||EMAIL_ADDRESS|||", text)
-    return new_string, count
-
-def run_mask_phone_numbers(text: str) -> tuple[str, int]:
-    pattern = r"(?<!\d)\(?\d{3}\)?[-.\s]?\(?\d{3}\)?[-.\s]?\d{4}(?!\d)"
-    new_string, count = re.subn(pattern, "|||PHONE_NUMBER|||", text)
-    return new_string, count
-
-def run_mask_ips(text: str) -> tuple[str, int]:
-    pattern = r"(?<!\d)((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?!\d)"
-    new_string, count = re.subn(pattern, "|||IP_ADDRESS|||", text)
-    return new_string, count
-
-def run_extract_text_from_html_bytes(html_bytes: bytes) -> str | None:
-    try:
-        html_str = html_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        encoding = detect_encoding(html_bytes)
-        html_str = html_bytes.decode(encoding, errors="ignore")
-    text = extract_plain_text(html_str)
-    return text
-
 
 def run_samples(warc_path: str, n: int=20):
     with (
