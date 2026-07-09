@@ -5,7 +5,7 @@ from itertools import islice
 from fastwarc.warc import ArchiveIterator, WarcRecordType
 from resiliparse.extract.html2text import extract_plain_text
 from resiliparse.parse.encoding import detect_encoding
-
+import fasttext
 
 def run_extract_text_from_html_bytes(html_bytes: bytes) -> str | None:
     try:
@@ -15,7 +15,6 @@ def run_extract_text_from_html_bytes(html_bytes: bytes) -> str | None:
         html_str = html_bytes.decode(encoding, errors="ignore")
     text = extract_plain_text(html_str)
     return text
-
 
 def compare_warc_wet(warc_path: str, wet_path: str, n: int = 20):
     with (
