@@ -28,8 +28,11 @@ class _EnglishWetFile(Furu[Path]):
         output_path = self.data_dir / "data.warc.wet.gz"
 
         self.logger.info("Loading English language identifier")
-        is_english: Callable[[str], bool] = "TODO"
-        assert is_english != "TODO", "you need to implement is_english. we use probability >= 0.7 with https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
+        lid_model = fasttext.load_model(str(get_shared_assets_path() / "classifiers" / "lid.176.bin"))
+
+        def is_english(text: str) -> bool:
+            labels, probs = lid_model.predict(text.replace("\n", " "))
+            return labels[0] == "__label__en" and probs[0] >= 0.7
 
         total_text = 0
         skipped_text = 0

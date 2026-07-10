@@ -47,5 +47,5 @@ def run_samples(warc_path: str, n: int=20, pool: int=500, seed:int=42):
             out.write(text[:800] + "\n")           # 正文预览，够人工判断即可
 
 if __name__ == "__main__":
-    warc_path = "CC-MAIN-20250417135010-20250417165010-00065.warc.gz"
+    warc_path = "local-shared-data/CC/example.warc.gz"
     run_samples(warc_path, 20, 500)

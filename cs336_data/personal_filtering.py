@@ -49,5 +49,5 @@ def run_samples(warc_path: str, n: int=20):
             
 
 if __name__ == "__main__":
-    warc_path = "CC-MAIN-20250417135010-20250417165010-00065.warc.gz"
+    warc_path = "local-shared-data/CC/example.warc.gz"
     run_samples(warc_path, 20)
