@@ -207,3 +207,23 @@
 - **分歧三：形态正常的垃圾照样通过**。除上述成人页外，DIY 站的薄内容页（handyhometips.com，正文只有分享按钮和推荐列表）也通过了——规则无法判断内容的意义和价值。
 
 总体：Gopher 规则善于清除"结构上不像正文"的页面，但（1）字母词占比规则会系统性误杀导航较多的真实内容页，（2）对非空格分词语言的判定是随机的，（3）对"形态正常、内容垃圾"的文本无能为力（需要 2.7 的质量分类器补位）。多语言场景必须先按语言路由并适配分词。
+
+## Problem (quality_classifier)
+
+### (a) (b)
+
+实现分为四步。首先，`scripts/prepare_quality_urls.py` 读取本地抽取的 46,460 条 Wikipedia 外链，执行 HTML 实体反转义、集合去重，并只保留具有域名的 HTTP/HTTPS URL；随后用固定种子 336 打乱并抽取 10,000 条，写入 `quality_data/wiki_urls.txt`。`scripts/save_urls_to_warc.sh` 再用**单个 wget 进程顺序下载**这些 URL，配置 5 秒连接超时、10 秒读取超时、每条 URL 只尝试一次且最多跟随 5 次重定向，实际生成了约 1.4 GB 的 `quality_data/wiki_positive.warc.gz`。这里尚未实现并发分片下载。
+
+其次，`scripts/build_quality_dataset.py` 用 Wikipedia WARC 构造 `wiki` 正样本，用第 2 节的 `local-shared-data/CC/example.warc.gz` 构造 `cc` 负样本，没有提前使用第 4 节的 `english-wet-data`。两类数据都只接受 HTTP 200 的 HTML 响应，使用 2.2 的 Resiliparse 实现抽取正文、压平连续空白，并要求 fastText 语言识别结果为英文且置信度至少为 0.7。正样本额外经过 Gopher、NSFW 和 toxic speech 过滤；负样本不经过这三项质量/内容过滤，以保留低质量反例。脚本设置每类最多 3,000 条，实际由较少的一类限制为每类 1,939 条，共得到 3,878 条平衡样本；固定种子打乱后按 90%/10% 划分，训练集 3,490 条（`cc` 1,754，`wiki` 1,736），验证集 388 条（`cc` 185，`wiki` 203）。当前实现没有额外进行正文哈希去重。
+
+最后，`scripts/train_fasttext_classifier.py` 使用 `epoch=10`、`lr=0.1`、`dim=100`、`wordNgrams=2`、`minCount=2` 和 softmax loss 训练二分类器，并保存为 `models/quality_classifier.bin`。重新运行得到验证集 precision@1 和 recall@1 均为 **0.8376**（388 条样本）。`tests/adapters.py` 中的 `run_classify_quality` 将换行替换为空格，调用该模型并移除 `__label__` 前缀；测试中的低质量 CC 样本被预测为 `cc`，置信度 **0.6851**，高质量 Wikipedia 引用样本被预测为 `wiki`，置信度 **0.8620**，`uv run pytest -k test_classify_quality` 的结果为 **1 passed**。
+
+## Problem (exact_deduplication)
+
+实现采用两遍扫描：第一遍以原始行的 128 位 MurmurHash 为键，用 `Counter` 统计该行在全部输入文件中的全局频次，从而不在内存中保存完整行；第二遍按原顺序重新读取每个文件，只写出哈希频次等于 1 的行。读取和写出均使用二进制模式以原样保留编码与换行；即使一个文件的全部行都重复，也仍在输出目录创建同名空文件。运行 `uv run pytest -k test_exact_line_deduplication`，结果为 **1 passed**。
+
+## Problem (minhash_deduplication)
+
+实现先对每篇完整文档做 NFD Unicode 规范化、删除组合重音、转小写、把所有 Unicode 标点替换为空格并压缩连续空白，然后构造 word n-gram 集合。使用固定随机种子 336 生成 `num_hashes` 个不同的 MurmurHash seed；每个 seed 下取文档所有 n-gram 哈希的最小值，组成 MinHash signature。signature 被均分成 `num_bands` 个 band，并以 `(band_index, band_values)` 为键进行 LSH 分桶；同桶文档两两组成候选对，同一候选对即使在多个 band 中命中也只验证一次。
+
+LSH 只负责缩小候选范围，最终仍使用原始 n-gram 集合计算真实 Jaccard 相似度。达到 `jaccard_threshold` 的候选对通过并查集合并，因此能够处理 A≈B、B≈C 形成的传递重复组；最后每组保留输入顺序最早的一篇，未成为候选或未达到阈值的文档维持单元素组并正常保留，文件内容以 bytes 原样写入输出目录。运行 `uv run pytest -k test_minhash_deduplication`，完全重复和模糊 MIT License 两项测试均通过，结果为 **2 passed**。
