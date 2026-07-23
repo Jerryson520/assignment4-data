@@ -227,3 +227,153 @@
 实现先对每篇完整文档做 NFD Unicode 规范化、删除组合重音、转小写、把所有 Unicode 标点替换为空格并压缩连续空白，然后构造 word n-gram 集合。使用固定随机种子 336 生成 `num_hashes` 个不同的 MurmurHash seed；每个 seed 下取文档所有 n-gram 哈希的最小值，组成 MinHash signature。signature 被均分成 `num_bands` 个 band，并以 `(band_index, band_values)` 为键进行 LSH 分桶；同桶文档两两组成候选对，同一候选对即使在多个 band 中命中也只验证一次。
 
 LSH 只负责缩小候选范围，最终仍使用原始 n-gram 集合计算真实 Jaccard 相似度。达到 `jaccard_threshold` 的候选对通过并查集合并，因此能够处理 A≈B、B≈C 形成的传递重复组；最后每组保留输入顺序最早的一篇，未成为候选或未达到阈值的文档维持单元素组并正常保留，文件内容以 bytes 原样写入输出目录。运行 `uv run pytest -k test_minhash_deduplication`，完全重复和模糊 MIT License 两项测试均通过，结果为 **2 passed**。
+
+## Problem (filter_data)
+
+### (a)
+
+最终过滤流水线由以下步骤组成：
+
+1. **长度过滤**：删除空文档、少于 50 词或超过 100,000 词的文档；
+2. **Gopher 质量过滤**：根据词数、平均词长、以省略号结尾的行比例和含字母词比例删除结构性低质量文本；
+3. **质量分类器**：使用前面训练的 fastText 分类器，删除预测为 `cc` 的低质量文档；
+4. **有害内容过滤**：删除预测为 NSFW 或 toxic speech 的文档；
+5. **PII 处理**：对通过全部拒绝过滤器的文档掩码邮箱地址、电话号码和 IPv4 地址。
+
+脚本使用两个 `ProcessPoolExecutor` worker，以 WET 文件为单位并行处理。每篇被丢弃的文档只记录第一个拒绝原因，因此不同过滤步骤的统计互不重叠。
+
+过滤结果如下：
+
+| 过滤阶段 | 删除数量 | 处理后保留数量 |
+|---|---:|---:|
+| 原始输入 | — | 637,937 |
+| 长度过滤 | 49,739 | 588,198 |
+| Gopher 质量过滤 | 131,719 | 456,479 |
+| fastText 质量分类器 | 227,847 | 228,632 |
+| NSFW 分类器 | 495 | 228,137 |
+| toxic speech 分类器 | 180 | 227,957 |
+
+最终保留 227,957 / 637,937 篇文档，保留率为 **35.73%**，共丢弃 409,980 篇文档。各过滤步骤在全部丢弃文档中的占比如下：
+
+- 长度过滤：**12.13%**；
+- Gopher 质量过滤：**32.13%**；
+- fastText 质量分类器：**55.58%**；
+- NSFW 分类器：**0.12%**；
+- toxic speech 分类器：**0.04%**。
+
+质量分类器贡献了最多的删除量，说明仅满足结构性的 Gopher 规则并不能保证网页内容具有较高的信息质量；Gopher 规则则主要清除了导航、目录和其他结构上不像连贯正文的页面。NSFW 和 toxic speech 的删除比例很低，一方面是因为输入已经预先过滤为英文，另一方面是前面的质量过滤已经先删除了大量垃圾页面。
+
+PII 掩码共修改 80,814 篇最终保留的文档，占保留文档的 **35.45%**，其中替换邮箱地址 105,719 次、电话号码 109,343 次、IPv4 地址 4,104 次。PII masking 只修改文本，不会额外删除文档。
+
+### (b)
+
+我在本地机器上使用两个 worker 处理了由 100 个原始 WET 文件生成的 25 个英语过滤 chunk。最终过滤流水线耗时 **2,153.58 秒**，约为 **35 分 54 秒**。这里统计的是对已经完成英语预过滤的 WET 数据执行最终质量过滤的时间，不包括原始 WET 下载和英语识别所需的时间。
+
+在处理速度近似线性、硬件和 worker 数量保持不变的假设下，处理课程原始规模的 2,500 个 WET 文件预计需要：
+
+\[
+2153.58 \times \frac{2500}{100} = 53839.41\text{ 秒}
+\]
+
+即约 **14 小时 57 分钟**。
+
+`CC-MAIN-2026-17` 的 `wet.paths.gz` 中共有 100,000 个 WET 路径，因此处理整个 crawl 的预计时间为：
+
+\[
+2153.58 \times \frac{100000}{100} = 2153576.49\text{ 秒}
+\]
+
+即约 **598.22 小时**，或 **24 天 22 小时**。这一估算假设不同 WET 文件的数据量和过滤成本接近，并且没有考虑网络下载、英语预过滤、磁盘速度变化及更大规模并行带来的影响；增加 worker 或使用分布式处理可以显著缩短实际墙钟时间。
+
+本机有 8 个 CPU 核心和 16 GB 内存。以 2 个 worker 的实测时间为基准，并假设计算能够理想地随 worker 数线性扩展，不同本地并行度下的预计时间如下：
+
+| Worker 数 | 100 个原始 WET | 2,500 个原始 WET | 全部 100,000 个 WET |
+|---:|---:|---:|---:|
+| 1 | 1 小时 11 分 47 秒 | 29.91 小时 | 49.85 天 |
+| 2 | 35 分 54 秒（实测） | 14.96 小时 | 24.93 天 |
+| 4 | 17 分 57 秒 | 7.48 小时 | 12.46 天 |
+| 8 | 8 分 58 秒 | 3.74 小时 | 6.23 天 |
+
+表中除 2-worker、100 个原始 WET 的结果外均为理想线性估算。实际加速通常低于该数值，因为多个进程会竞争磁盘带宽和 CPU 资源，而且每个 worker 都需要分别加载 fastText 分类器模型并占用内存。对这台机器而言，4 个 worker 是速度和内存占用之间更稳妥的选择；8 个 worker 可能更快，但需要通过小规模运行确认不会出现内存压力或 I/O 饱和。
+
+## Problem (inspect_filtered_data)
+
+### (a)
+
+使用固定随机种子 336，通过 reservoir sampling 从最终保留的 227,957 篇文档中随机抽取 5 篇：
+
+1. **University of Birmingham：数据库协调与数据质量分析工具**（`research.birmingham.ac.uk`）
+
+   > This demonstration illustrates how a comprehensive database reconciliation tool can provide the ability to characterize data-quality and data-reconciliation issues in complex real-world applications.
+
+   这是大学研究成果页面，包含完整的论文摘要、研究背景和方法介绍，信息密度高、语言正式连贯。虽然页面仍含少量导航和出版元数据，但主体非常适合语言模型训练，也与 C4 中常见的教育和研究网页较为接近。
+
+2. **Prudence International School：国际瑜伽日活动**（`prudenceschool.com`）
+
+   > Our school organized a series of events and activities to mark this special occasion. The session included a blend of asanas, pranayama, and meditation techniques.
+
+   该页面对学校瑜伽日活动进行了连贯而具体的描述，包含活动流程、参与者和教育意义，正文质量较好。页首存在导航菜单，联系方式也经过 PII 掩码，但这些噪声没有压过主体内容，因此仍适合训练。
+
+3. **Open University：志愿部门公开课程**（`open.edu`）
+
+   > Introducing the voluntary sector ... OpenLearn will be unavailable from 8am to 10am on Wednesday 18 March due to a website upgrade.
+
+   这是开放大学的课程材料，正文篇幅较长，属于结构清晰、具有教育价值的说明性文本，是本轮样本中最适合语言模型训练的页面之一。不过提取结果重复保留了站点公告、账户入口和导航，说明当前流水线仍不能完全清除网页模板。
+
+4. **Topserve：亚洲管理学院教育设施新闻**（`topserve.com.ph`）
+
+   > The case rooms, equipped with cutting-edge technology and interactive learning tools, stand as a testament to AIM's dedication to providing a dynamic and immersive educational experience.
+
+   该页面是一篇较短的企业新闻稿，语法连贯并提供了具体事件信息，作为一般网页语料具有一定价值。内容带有明显的公关宣传色彩，且页尾混有菜单、评论框和联系方式，因此质量低于大学课程和研究页面，但保留仍属合理。
+
+5. **GP Services：被赌场 SEO 内容污染的页面**（`gp-services.space`）
+
+   > Ocean Breeze On Line Casino prides itself in the release of latest video games each week ... we want the best offers and promotions and of course a huge number of games.
+
+   页面标题和站点界面是法语技术服务内容，正文却突然变成英语在线赌场推广，主题错位且具有明显的 SEO 注入特征，不适合用于语言模型训练。它通过了 Gopher 和 fastText 质量分类器，说明当前过滤器仍会漏放结构和语法表面正常、但语义上属于垃圾内容的页面。
+
+总体来看，5 个随机样本中有 3 个质量较高、1 个基本可用、1 个明显不合格。最终流水线显著提高了内容质量，但导航模板残留和形态正常的 SEO 垃圾仍是主要漏报类型。
+
+### (b)
+
+使用相同的固定随机种子先从 637,937 篇原始英语 WET 文档中通过 reservoir sampling 抽取 100 篇候选，再对候选运行最终过滤器，从中取得 5 篇被删除的文档：
+
+1. **Alpharetta Blinds：反爬验证页面**（`too_short`）
+
+   > One moment, please... Loader. Please wait while your request is being verified...
+
+   页面只有反爬验证提示，没有任何可供语言模型学习的正文，因少于 50 词而被删除完全合理。这类页面即使语言正常，也只会让模型学习无意义的访问验证模板。
+
+2. **BusinessNameUSA：按摩业务注册信息堆积页**（`low_quality`）
+
+   > All Internet Business Massage Therapy businesses/entities need a business license and an EIN ... Get it Now!
+
+   页面把营业执照、卖方许可、LLC 和按摩执业要求等段落反复拼接，并混入大量关键词、问答片段、营销按钮和疑似自动生成的人名，重复度极高且结构混乱。质量分类器将其删除是合理的，因为少量可能有用的注册信息被大量 SEO 和模板内容淹没。
+
+3. **Antibody Registry：空搜索结果页**（`too_short`）
+
+   > Antibody Registry
+
+   提取结果只有网站名称，没有抗体编号、说明或其他实质内容，因长度不足被删除合理。保留这种页面只会增加站点标题等低信息量文本的频率。
+
+4. **Groundswell：冲浪用品页面**（`low_quality`）
+
+   > Whether you're looking for the latest boards, the hottest swimwear, serious wetsuits, or anything else related to the surfing lifestyle, you've come to the right place.
+
+   页面包含连贯的冲浪板、潜水服和毛巾产品介绍，语法正常，也有一定自然语言训练价值，因此这是五个样本中最可能的误杀。不过内容较短、营销意味强且带有明显模板化商品列表；从优先保留高信息密度 C4 风格文本的目标看，删除仍可以接受，但也暴露了质量分类器会误伤正常商业页面的问题。
+
+5. **Richmond Park Church：青年主日学活动页**（`low_quality`）
+
+   > Youth Sunday School. Sunday, March 8, 2026, 10:00 - 10:45 am.
+
+   页面确实提供了活动名称、日期和时间，但绝大部分提取文本是导航菜单、联系方式、其他活动链接和页脚，实际正文只有一行。质量分类器删除它基本合理，因为有效信息相对于网页模板的比例太低。
+
+总体上，5 个随机丢弃样本中有 4 个删除明确合理，1 个存在一定误杀可能。长度过滤准确清除了无正文页面；质量分类器能够删除重复 SEO 和模板主导的页面，但也可能把语言连贯、只是商业属性较强的正常网页判为低质量。
+
+### (c)
+
+我实际生成并比较了两个版本的数据。第一版 `baseline` 只删除空文档、少于 50 词和超过 100,000 词的文档，在 637,937 篇输入中保留 588,198 篇，保留率为 **92.20%**。这一版本几乎只排除了空页和极端长度页面，人工查看后仍能发现大量导航模板、SEO 页面和低信息密度内容，因此不足以作为最终训练数据。
+
+第二版 `final` 在长度过滤后依次加入 Gopher 质量规则、fastText 质量分类器、NSFW 与 toxic speech 分类器，并对保留文档进行 PII 掩码。最终保留 227,957 篇，保留率下降到 **35.73%**。随机检查表明，保留样本多数是大学研究、公开课程、学校活动和完整食谱等连贯文本；被拒样本则主要是反爬提示、空搜索页、重复 SEO 内容和模板主导页面，说明新增过滤步骤总体有效。
+
+抽样也暴露了两个相反的问题：一篇被赌场 SEO 内容注入的页面仍被保留，而一篇语法连贯的冲浪用品商业页面被质量分类器删除。我检查了保留样本的质量分类器置信度：赌场垃圾页的 `wiki` 分数为 0.631，而高质量 Open University 课程页也只有 0.676；如果简单把阈值提高到 0.7，虽然能删除前者，却也会误删后者。因此我没有根据少量样本继续提高阈值或为单个域名增加黑名单，而是保留当前流水线，并将更强的语义质量分类器、SEO 注入检测和网页正文模板清理作为后续改进方向。

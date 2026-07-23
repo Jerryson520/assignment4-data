@@ -59,7 +59,7 @@ def run_classify_nsfw(text: str) -> tuple[Any, float]:
     model = NSFW_MODEL
     label, scores = model.predict(text.replace("\n", " ").strip())
     label = label[0][9:]
-    return label, scores[0]
+    return label, scores[0] # 
 
 
 def run_classify_toxic_speech(text: str) -> tuple[Any, float]:
